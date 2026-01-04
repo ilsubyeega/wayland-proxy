@@ -1,0 +1,25 @@
+[package]
+name = "wayland-proxy"
+version = "0.1.0"
+edition = "2021"
+description = "Transparent Wayland proxy that prefixes app IDs"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ilsubyeega/wayland-proxy"
+
+[dependencies]
+# Event loop
+calloop = "0.14"
+
+# Unix socket I/O with FD passing
+rustix = { version = "1.0", features = ["net", "event"] }
+
+# libc for close() in Drop
+libc = "0.2"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+[profile.release]
+lto = true
+strip = true
