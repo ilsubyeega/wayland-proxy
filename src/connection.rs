@@ -680,20 +680,12 @@ impl ProxyConnection {
 
         // Check if this is xdg_toplevel.set_app_id
         if self.tracker.is_set_app_id(object_id, opcode) {
-            if self.tracker.has_app_id(object_id) {
-                // We already injected an app_id - drop this one
-                log::info!(
-                    "[CONN:{}] Dropping client set_app_id for xdg_toplevel@{} (already set)",
-                    self.conn_id,
-                    object_id
-                );
-                return Ok(());
-            } else {
-                // Modify and forward the client's app_id
-                self.send_modified_app_id(object_id, &msg_data)?;
-                self.tracker.mark_has_app_id(object_id);
-                return Ok(());
-            }
+            // FIXME: does multiple set_app_id results memory leaks in compositor?
+            // Modify and forward the client's app_id
+            self.send_modified_app_id(object_id, &msg_data)?;
+            self.tracker.mark_has_app_id(object_id);
+            return Ok(());
+            
         }
 
         // Forward the message normally
@@ -737,14 +729,17 @@ impl ProxyConnection {
 
     /// Inject a synthetic `set_app_id` for a newly created toplevel.
     fn inject_app_id(&mut self, toplevel_id: u32) -> io::Result<()> {
+        let app_id = format!("{}:unknown", &self.prefix);
+
         log::info!(
-            "[CONN:{}] Injecting app_id='{}' for xdg_toplevel@{}",
+            "[CONN:{}] Injecting prefix='{}' to app_id='{}' for xdg_toplevel@{}",
             self.conn_id,
             self.prefix,
+            app_id,
             toplevel_id
         );
 
-        let msg = build_set_app_id_message(toplevel_id, &self.prefix);
+        let msg = build_set_app_id_message(toplevel_id, &app_id);
         
         // Send without any FDs
         let mut no_fds = VecDeque::new();
