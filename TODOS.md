@@ -1,7 +1,11 @@
 # FIXME
 - [ ] do security audit
-- [ ] remove wayland socket when closing.
 - [ ] investigate whether the other protocol could be used for shits
 - [ ] do fuzz test in order to not screw up entire environment
+- [ ] remove wayland socket file when closing.
+- [ ] create `{prefix}:unknown` appid first and then make client to override it.
+- [ ] Do not assume `WL_REGISTRY` to be object id 2.
+- [ ] Track is not implemented properly.
+- [ ] Track destroyed object ids and remove tracked one if was there. 
 - [x] verify whether the app_id can be set after initial setup
 - [x] rename to `prefix:` instead of `prefix` when initial state

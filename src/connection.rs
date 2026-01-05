@@ -51,21 +51,26 @@ const SOCKET_BUFFER_SIZE: usize = 4096;
 
 /// Well-known object IDs in Wayland protocol
 mod object_ids {
-    /// wl_display is always object 1 (unused but documented for reference)
-    #[allow(dead_code)]
+    /// wl_display is always object 1
     pub const WL_DISPLAY: u32 = 1;
-    /// wl_registry is always object 2 (after wl_display.get_registry)
-    pub const WL_REGISTRY: u32 = 2;
 }
 
 /// Opcodes for various Wayland interfaces
 mod opcodes {
+    /// wl_display.get_registry
+    pub const WL_DISPLAY_GET_REGISTRY: u16 = 1;
     /// wl_registry.bind
     pub const WL_REGISTRY_BIND: u16 = 0;
-    /// xdg_surface.get_toplevel
-    pub const XDG_SURFACE_GET_TOPLEVEL: u16 = 1;
+    /// xdg_wm_base.destroy
+    pub const XDG_WM_BASE_DESTROY: u16 = 0;
     /// xdg_wm_base.get_xdg_surface
     pub const XDG_WM_BASE_GET_XDG_SURFACE: u16 = 2;
+    /// xdg_surface.destroy
+    pub const XDG_SURFACE_DESTROY: u16 = 0;
+    /// xdg_surface.get_toplevel
+    pub const XDG_SURFACE_GET_TOPLEVEL: u16 = 1;
+    /// xdg_toplevel.destroy
+    pub const XDG_TOPLEVEL_DESTROY: u16 = 0;
     /// xdg_toplevel.set_app_id
     pub const XDG_TOPLEVEL_SET_APP_ID: u16 = 3;
 }
@@ -76,7 +81,8 @@ mod opcodes {
 
 /// Minimal object tracker for xdg-shell objects.
 ///
-/// Only tracks objects in the path to `xdg_toplevel`:
+/// Tracks objects in the path to `xdg_toplevel`:
+/// - `wl_registry` (from `wl_display.get_registry`)
 /// - `xdg_wm_base` (from `wl_registry.bind`)
 /// - `xdg_surface` (from `xdg_wm_base.get_xdg_surface`)
 /// - `xdg_toplevel` (from `xdg_surface.get_toplevel`)
@@ -84,17 +90,17 @@ mod opcodes {
 /// # Security
 ///
 /// Object IDs are validated to be non-zero before tracking.
-/// Duplicate IDs are allowed (client may reuse after destroy).
+/// Objects are removed when destroyed to allow ID reuse.
 #[derive(Debug, Default)]
 pub struct ObjectTracker {
+    /// Active wl_registry object IDs (from wl_display.get_registry)
+    wl_registries: Vec<u32>,
     /// Active xdg_wm_base object IDs
     xdg_wm_bases: Vec<u32>,
     /// Active xdg_surface object IDs  
     xdg_surfaces: Vec<u32>,
     /// Active xdg_toplevel object IDs
     xdg_toplevels: Vec<u32>,
-    /// Toplevels that have received an app_id (injected or from client)
-    toplevels_with_app_id: Vec<u32>,
 }
 
 impl ObjectTracker {
@@ -102,6 +108,27 @@ impl ObjectTracker {
     #[inline]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Track a `wl_display.get_registry` call.
+    ///
+    /// # Arguments
+    /// * `new_id` - The object ID assigned to the new wl_registry
+    pub fn track_registry(&mut self, new_id: u32) {
+        debug_assert!(new_id != 0, "Object ID must be non-zero");
+        
+        log::debug!(
+            "[TRACK] wl_display.get_registry -> wl_registry@{} (total: {})",
+            new_id,
+            self.wl_registries.len() + 1
+        );
+        self.wl_registries.push(new_id);
+    }
+
+    /// Check if object ID is a known wl_registry.
+    #[inline]
+    pub fn is_wl_registry(&self, id: u32) -> bool {
+        self.wl_registries.contains(&id)
     }
 
     /// Track a `wl_registry.bind` for `xdg_wm_base`.
@@ -182,35 +209,44 @@ impl ObjectTracker {
         opcode == opcodes::XDG_TOPLEVEL_SET_APP_ID && self.is_xdg_toplevel(object_id)
     }
 
-    /// Check if toplevel already has an app_id set.
-    #[inline]
-    pub fn has_app_id(&self, toplevel_id: u32) -> bool {
-        self.toplevels_with_app_id.contains(&toplevel_id)
-    }
-
-    /// Mark toplevel as having an app_id.
-    pub fn mark_has_app_id(&mut self, toplevel_id: u32) {
-        debug_assert!(
-            self.is_xdg_toplevel(toplevel_id),
-            "Cannot mark non-toplevel {} as having app_id",
-            toplevel_id
-        );
-        
-        if !self.toplevels_with_app_id.contains(&toplevel_id) {
-            log::trace!("[TRACK] xdg_toplevel@{} marked as having app_id", toplevel_id);
-            self.toplevels_with_app_id.push(toplevel_id);
+    /// Track object destruction.
+    ///
+    /// Removes the object from tracking if it was tracked.
+    /// Returns `true` if the object was being tracked.
+    pub fn track_destroy(&mut self, object_id: u32, opcode: u16) -> bool {
+        // xdg_toplevel.destroy (opcode 0)
+        if opcode == opcodes::XDG_TOPLEVEL_DESTROY && self.is_xdg_toplevel(object_id) {
+            log::debug!("[TRACK] xdg_toplevel@{} destroyed", object_id);
+            self.xdg_toplevels.retain(|&id| id != object_id);
+            return true;
         }
+
+        // xdg_surface.destroy (opcode 0)
+        if opcode == opcodes::XDG_SURFACE_DESTROY && self.is_xdg_surface(object_id) {
+            log::debug!("[TRACK] xdg_surface@{} destroyed", object_id);
+            self.xdg_surfaces.retain(|&id| id != object_id);
+            return true;
+        }
+
+        // xdg_wm_base.destroy (opcode 0)
+        if opcode == opcodes::XDG_WM_BASE_DESTROY && self.is_xdg_wm_base(object_id) {
+            log::debug!("[TRACK] xdg_wm_base@{} destroyed", object_id);
+            self.xdg_wm_bases.retain(|&id| id != object_id);
+            return true;
+        }
+
+        false
     }
 
     /// Get statistics for debugging.
     #[allow(dead_code)]
     pub fn stats(&self) -> String {
         format!(
-            "wm_bases={}, surfaces={}, toplevels={}, with_app_id={}",
+            "registries={}, wm_bases={}, surfaces={}, toplevels={}",
+            self.wl_registries.len(),
             self.xdg_wm_bases.len(),
             self.xdg_surfaces.len(),
-            self.xdg_toplevels.len(),
-            self.toplevels_with_app_id.len()
+            self.xdg_toplevels.len()
         )
     }
 }
@@ -594,6 +630,10 @@ impl ProxyConnection {
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
             Err(e) => {
                 log::debug!("[CONN:{}] Client error: {}", self.conn_id, e);
+                log::debug!("[CONN:{}] Client buffer size: {} bytes", self.conn_id, self.client_buf.len());
+                log::debug!("[CONN:{}] Tracker state: {}", self.conn_id, self.tracker.stats());
+                log::debug!("[CONN:{}] Pending client fds: {}", self.conn_id, self.client_fds.len());
+                log::debug!("[CONN:{}] Pending server fds: {}", self.conn_id, self.server_fds.len());
                 return Ok(false);
             }
         }
@@ -618,6 +658,7 @@ impl ProxyConnection {
         let n = recv_with_fds(&self.client, &mut buf, &mut self.client_fds)?;
 
         if n == 0 {
+            log::debug!("[CONN:{}] Client closed the connection", self.conn_id);
             return Err(io::Error::new(io::ErrorKind::BrokenPipe, "client closed"));
         }
 
@@ -680,21 +721,19 @@ impl ProxyConnection {
 
         // Check if this is xdg_toplevel.set_app_id
         if self.tracker.is_set_app_id(object_id, opcode) {
-            // FIXME: does multiple set_app_id results memory leaks in compositor?
-            // Modify and forward the client's app_id
+            // Modify and forward the client's app_id (overrides initial unknown)
             self.send_modified_app_id(object_id, &msg_data)?;
-            self.tracker.mark_has_app_id(object_id);
+            // Note: we don't prevent further set_app_id calls - client can update
             return Ok(());
-            
         }
 
         // Forward the message normally
         send_with_fds(&self.server, &msg_data, &mut self.client_fds)?;
 
-        // If a new toplevel was created, inject our app_id
+        // If a new toplevel was created, inject our initial app_id
+        // Client's subsequent set_app_id will override this
         if let Some(toplevel_id) = new_toplevel {
             self.inject_app_id(toplevel_id)?;
-            self.tracker.mark_has_app_id(toplevel_id);
         }
 
         Ok(())
@@ -707,8 +746,22 @@ impl ProxyConnection {
         opcode: u16,
         msg_data: &[u8],
     ) -> Option<u32> {
-        // wl_registry.bind (object 2, opcode 0)
-        if object_id == object_ids::WL_REGISTRY && opcode == opcodes::WL_REGISTRY_BIND {
+        // First, check for destroy operations
+        self.tracker.track_destroy(object_id, opcode);
+
+        // wl_display.get_registry (object 1, opcode 1)
+        if object_id == object_ids::WL_DISPLAY && opcode == opcodes::WL_DISPLAY_GET_REGISTRY {
+            if msg_data.len() >= 12 {
+                let new_id = u32::from_ne_bytes([
+                    msg_data[8], msg_data[9], msg_data[10], msg_data[11]
+                ]);
+                self.tracker.track_registry(new_id);
+            }
+            return None;
+        }
+
+        // wl_registry.bind (dynamically tracked registry, opcode 0)
+        if self.tracker.is_wl_registry(object_id) && opcode == opcodes::WL_REGISTRY_BIND {
             if let Some((interface, new_id)) = parse_bind_request(msg_data) {
                 self.tracker.track_bind(&interface, new_id);
             }
@@ -728,13 +781,15 @@ impl ProxyConnection {
     }
 
     /// Inject a synthetic `set_app_id` for a newly created toplevel.
+    ///
+    /// This sets an initial `{prefix}:unknown` app_id which will be
+    /// overridden if/when the client sends its own set_app_id.
     fn inject_app_id(&mut self, toplevel_id: u32) -> io::Result<()> {
         let app_id = format!("{}:unknown", &self.prefix);
 
         log::info!(
-            "[CONN:{}] Injecting prefix='{}' to app_id='{}' for xdg_toplevel@{}",
+            "[CONN:{}] Injecting initial app_id='{}' for xdg_toplevel@{}",
             self.conn_id,
-            self.prefix,
             app_id,
             toplevel_id
         );
@@ -776,6 +831,7 @@ impl ProxyConnection {
         let n = recv_with_fds(&self.server, &mut buf, &mut self.server_fds)?;
 
         if n == 0 {
+            log::debug!("[CONN:{}] Server closed the connection", self.conn_id);
             return Err(io::Error::new(io::ErrorKind::BrokenPipe, "server closed"));
         }
 
@@ -868,8 +924,13 @@ mod tests {
         let mut tracker = ObjectTracker::new();
         
         // Initially empty
+        assert!(!tracker.is_wl_registry(2));
         assert!(!tracker.is_xdg_wm_base(10));
         assert!(!tracker.is_xdg_toplevel(20));
+        
+        // Track wl_registry
+        tracker.track_registry(2);
+        assert!(tracker.is_wl_registry(2));
         
         // Track xdg_wm_base
         tracker.track_bind("xdg_wm_base", 10);
@@ -890,9 +951,14 @@ mod tests {
         assert!(!tracker.is_set_app_id(20, 0)); // Wrong opcode
         assert!(!tracker.is_set_app_id(99, opcodes::XDG_TOPLEVEL_SET_APP_ID)); // Wrong object
         
-        // Mark as having app_id
-        assert!(!tracker.has_app_id(20));
-        tracker.mark_has_app_id(20);
-        assert!(tracker.has_app_id(20));
+        // Test destroy tracking
+        assert!(tracker.track_destroy(20, opcodes::XDG_TOPLEVEL_DESTROY));
+        assert!(!tracker.is_xdg_toplevel(20));
+        
+        assert!(tracker.track_destroy(15, opcodes::XDG_SURFACE_DESTROY));
+        assert!(!tracker.is_xdg_surface(15));
+        
+        assert!(tracker.track_destroy(10, opcodes::XDG_WM_BASE_DESTROY));
+        assert!(!tracker.is_xdg_wm_base(10));
     }
 }

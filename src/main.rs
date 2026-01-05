@@ -57,6 +57,8 @@ struct ProxyState {
     connections: HashMap<RawFd, ProxyConnection>,
     /// Path to the upstream compositor socket
     upstream_path: PathBuf,
+    /// Socket paths created by this proxy (for cleanup)
+    socket_paths: Vec<PathBuf>,
 }
 
 impl ProxyState {
@@ -64,6 +66,20 @@ impl ProxyState {
         Self {
             connections: HashMap::new(),
             upstream_path,
+            socket_paths: Vec::new(),
+        }
+    }
+}
+
+impl Drop for ProxyState {
+    fn drop(&mut self) {
+        for path in &self.socket_paths {
+            if path.exists() {
+                log::info!("Removing socket: {}", path.display());
+                if let Err(e) = std::fs::remove_file(path) {
+                    log::warn!("Failed to remove socket {}: {}", path.display(), e);
+                }
+            }
         }
     }
 }
@@ -184,6 +200,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             socket_path.display(),
             prefix
         );
+
+        // Track socket path for cleanup
+        state.socket_paths.push(socket_path.clone());
 
         // Register with event loop
         let upstream_clone = state.upstream_path.clone();
