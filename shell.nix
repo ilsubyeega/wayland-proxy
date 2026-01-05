@@ -1,3 +1,6 @@
+# Dev purpose shell.nix for wayland-proxy project
+# Don't use for anything else, i dont maintain this
+
 {
   pkgs ? import <nixpkgs> { },
 }:
