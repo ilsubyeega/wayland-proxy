@@ -1,3 +1,7 @@
+# DEPRECATED
+I'm giving up this since it is manually editing raw protocol and is very fragile. Just for sure, Use `waypipe` instead. I'm daily using now.
+
+
 # wayland-proxy
 
 A transparent Wayland proxy that intercepts and modifies `xdg_toplevel.set_app_id` requests.
